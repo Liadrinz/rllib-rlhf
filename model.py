@@ -1,5 +1,5 @@
 import warnings
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, Callable
 
 import numpy as np
 import torch
@@ -13,7 +13,7 @@ from ray.rllib.utils.framework import TensorType
 from ray.rllib.utils.typing import ModelConfigDict, TensorType, Union
 from ray.rllib.policy.sample_batch import SampleBatch
 from torch import nn
-from transformers.data.data_collator import DataCollatorForSeq2Seq
+from transformers.modeling_outputs import ModelOutput
 from transformers.modeling_utils import PreTrainedModel
 from transformers.tokenization_utils import PreTrainedTokenizer
 
@@ -43,6 +43,7 @@ class ActorCriticForLM(TorchModelV2, nn.Module):
         max_answer_length: int,
         tokenizer: PreTrainedTokenizer,
         generative: PreTrainedModel,
+        hidden_state_getter: Optional[Callable[[ModelOutput], torch.Tensor]] = None,
     ):
         TorchModelV2.__init__(self, obs_space, action_space, tokenizer.vocab_size, model_config, name)
         nn.Module.__init__(self)
@@ -54,6 +55,7 @@ class ActorCriticForLM(TorchModelV2, nn.Module):
         self.tokenizer = tokenizer
         self.generative = generative
         self.critic = nn.Linear(self.attention_dim, 1)
+        self.hidden_state_getter = (lambda outputs: outputs.hidden_states[-1][:, -1]) if hidden_state_getter is None else hidden_state_getter
         self._features: Optional[TensorType] = None
     
     @staticmethod
@@ -63,7 +65,7 @@ class ActorCriticForLM(TorchModelV2, nn.Module):
         return {"input_ids": input_ids, "attention_mask": attention_mask, "labels": input_ids}
     
     def forward(self, input_dict: Dict[str, TensorType], state: List[TensorType], seq_lens: TensorType) -> (TensorType, List[TensorType]):
-        batch = self.preprocess_input_ids(input_dict[SampleBatch.OBS].values, self.tokenizer)
+        batch = self.preprocess_input_ids(input_dict[SampleBatch.OBS], self.tokenizer)
         prompt_ids = batch["input_ids"]
         prompt_attention_mask = batch["attention_mask"]
         valid_length = max(1, prompt_attention_mask.sum(dim=-1).max())
@@ -87,7 +89,7 @@ class ActorCriticForLM(TorchModelV2, nn.Module):
         output_attention_mask = output_ids[:, prompt_length:] != self.tokenizer.eos_token_id
         output_attention_mask = torch.cat((prompt_attention_mask, output_attention_mask), dim=-1)
         outputs = self.generative(input_ids=output_ids, attention_mask=output_attention_mask, output_hidden_states=True)
-        self._features = outputs.hidden_states[-1][:, -1]
+        self._features = self.hidden_state_getter(outputs)
         action_logits = outputs.logits[:, prompt_length-1:-1, :]
         action_logits[:, -action_pad_len:, :] = torch.finfo(action_logits.dtype).min
         action_logits[:, -action_pad_len, self.tokenizer.pad_token_id] = 0
