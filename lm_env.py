@@ -35,6 +35,8 @@ class HuggingFaceLMEnv(Env):
         super().__init__()
         
         self.tokenizer = env_config["tokenizer"]
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
         self.reward_model = env_config["reward_model"]
         self.max_prompt_length = env_config["max_prompt_length"]
         self.max_answer_length = env_config["max_answer_length"]
@@ -45,11 +47,7 @@ class HuggingFaceLMEnv(Env):
         assert self.max_prompt_length > 0 and self.max_answer_length > 0
         
         self.spec = EnvSpec("huggingface-lm", max_episode_steps=1)
-        self.observation_space = InputIdsSpace(
-            Box(-1, self.vocab_size, shape=(), dtype=int),
-            sample_len=self.max_prompt_length,
-            max_len=self.max_prompt_length+self.max_answer_length
-        )
+        self.observation_space = Box(0, self.vocab_size, shape=(self.max_prompt_length+self.max_answer_length,), dtype=int)
         self.action_space = InputIdsSpace(
             Discrete(self.vocab_size),
             sample_len=self.max_answer_length,
@@ -60,7 +58,7 @@ class HuggingFaceLMEnv(Env):
     
     @property
     def state(self):
-        return self.input_ids
+        return self.input_ids + [self.tokenizer.pad_token_id] * (self.max_prompt_length+self.max_answer_length-len(self.input_ids))
     
     def reset(self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None) -> Tuple[Any, Dict[str, Any]]:
         if self.prompt_dataset is None:
