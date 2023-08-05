@@ -14,16 +14,16 @@ from model import ActorCriticForLM
 from reward import RankBasedRewardModel
 
 
-ray.init(local_mode=True)
+ray.init(num_gpus=2)
 
 ModelCatalog.register_custom_model("ac4lm", ActorCriticForLM)
 ModelCatalog.register_custom_action_dist("sequence_dist", ActorCriticForLM.SequenceDistribution)
 
-max_prompt_length = 16
-max_answer_length = 32
+max_prompt_length = 32
+max_answer_length = 128
 tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
 model = GPT2LMHeadModel.from_pretrained("gpt2")
-reward_model = ray.remote(RankBasedRewardModel).remote("OpenAssistant/reward-model-deberta-v3-base", "cpu")
+reward_model = ray.remote(num_gpus=1)(RankBasedRewardModel).remote("OpenAssistant/reward-model-deberta-v3-base", "cuda:0")
 config = (
     PPOConfig(algo_class=PPOForLM)
     .environment(
@@ -36,8 +36,11 @@ config = (
             "prompt_dataset": PromptDataset(tokenizer, "demo_prompt.txt"),
         }
     )
-    # .resources(num_gpus=2)
-    .rollouts(rollout_fragment_length=1)
+    .resources(num_gpus=1)
+    .rollouts(
+        num_rollout_workers=0,
+        rollout_fragment_length=1,
+    )
     .framework("torch")
     .training(
         model={
@@ -51,13 +54,11 @@ config = (
                 "max_answer_length": max_answer_length,
             },
         },
-        train_batch_size=2,
-        sgd_minibatch_size=2,
+        train_batch_size=4,
+        sgd_minibatch_size=4,
     )
     .evaluation(evaluation_interval=1)
-    .experimental(
-        _disable_preprocessor_api=False,
-    )
+    .experimental(_disable_preprocessor_api=False)
 )
 tuner = tune.Tuner(
     PPOForLM,
